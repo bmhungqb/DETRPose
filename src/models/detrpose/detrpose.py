@@ -36,4 +36,3 @@ class DETRPose(nn.Module):
         feats = self.encoder(feats)
         out = self.transformer(feats, targets, samples if self.training else None)
         return out
-
