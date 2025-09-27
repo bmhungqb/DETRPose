@@ -267,7 +267,7 @@ class TransformerDecoder(nn.Module):
     def __init__(self, decoder_layer, num_layers, 
                     return_intermediate=False, 
                     hidden_dim=256,
-                    num_body_points=17):   
+                    num_body_points=13):   
         super().__init__()
         if num_layers > 0:
             self.layers = _get_clones(decoder_layer, num_layers, layer_share=False)
@@ -433,7 +433,7 @@ class Transformer(nn.Module):
         two_stage_class_embed_share=True,
         two_stage_bbox_embed_share=True,
         cls_no_bias = False,
-        num_body_points=17,
+        num_body_points=13,
         # new parameters
         feat_strides=None,
         eval_spatial_size=None,

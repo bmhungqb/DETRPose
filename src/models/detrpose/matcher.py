@@ -20,7 +20,7 @@ import numpy as np
 
 class HungarianMatcher(nn.Module):
     def __init__(self, cost_class: float = 1, focal_alpha=0.25,
-                 cost_keypoints=1.0, cost_oks=0.01, num_body_points=17):
+                 cost_keypoints=1.0, cost_oks=0.01, num_body_points=13):
         super().__init__()
         self.cost_class = cost_class
 

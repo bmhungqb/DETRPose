@@ -5,7 +5,7 @@ from torchvision.ops.boxes import nms
 
 class PostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
-    def __init__(self, num_select=60, num_body_points=17) -> None:
+    def __init__(self, num_select=60, num_body_points=13) -> None:
         super().__init__()
         self.num_select = num_select
         self.num_body_points = num_body_points
