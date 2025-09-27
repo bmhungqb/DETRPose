@@ -26,7 +26,7 @@ class CocoEvaluator(object):
         assert isinstance(iou_types, (list, tuple, ListConfig))
         coco_gt = COCO(ann_file)
         self.coco_gt = coco_gt
-
+        self.num_kpts = len(coco_gt.cats[list(coco_gt.cats.keys())[0]]["keypoints"])
         self.iou_types = iou_types
         self.coco_eval = {}
         for iou_type in iou_types:
@@ -86,6 +86,7 @@ class CocoEvaluator(object):
             coco_eval.cocoDt = coco_dt
             coco_eval.params.imgIds = list(img_ids)
             coco_eval.params.useCats = self.useCats
+            coco_eval.params.kpt_oks_sigmas = np.ones(self.num_kpts) / self.num_kpts
             img_ids, eval_imgs = evaluate(coco_eval)
 
             self.eval_imgs[iou_type].append(eval_imgs)

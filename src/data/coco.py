@@ -99,6 +99,8 @@ class ConvertCocoPolysToMask(object):
         if len(img_array.shape) == 2:
             img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
             image = Image.fromarray(img_array)
+        # FIX: get num_keyspoints
+        num_keypoints = len(target["categories"]["keypoints"]) if "categories" in target and "keypoints" in target["categories"] else max(len(obj["keypoints"]) for obj in target["annotations"]) // 3
         image_id = target["image_id"]
         image_id = torch.tensor([image_id])
         anno = target["annotations"]
@@ -106,7 +108,7 @@ class ConvertCocoPolysToMask(object):
         anno = [obj for obj in anno if obj['num_keypoints'] != 0]
         keypoints = [obj["keypoints"] for obj in anno]
         boxes = [obj["bbox"] for obj in anno]
-        keypoints = torch.as_tensor(keypoints, dtype=torch.float32).reshape(-1, 17, 3)
+        keypoints = torch.as_tensor(keypoints, dtype=torch.float32).reshape(-1, num_keypoints, 3)
         # guard against no boxes via resizing
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
         boxes[:, 2:] += boxes[:, :2]

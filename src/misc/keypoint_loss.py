@@ -60,8 +60,8 @@ class OKSLoss(nn.Module):
             self.sigmas = np.array([
                 1.07, 1.07, 0.67
             ]) / 10.0
-        else:
-            raise ValueError(f'Unsupported keypoints number {num_keypoints}')
+        else: #for custome keypoints
+            self.sigmas = np.ones(num_keypoints, dtype=np.float32) / float(num_keypoints)
 
     def forward(self,
                 pred,

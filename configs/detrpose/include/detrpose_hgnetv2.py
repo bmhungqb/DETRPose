@@ -66,7 +66,7 @@ model = L(DETRPose)(
         dec_n_points=4,
         learnable_tgt_init=True,
         two_stage_type='standard',
-        num_body_points=17,
+        num_body_points=13,
         aux_loss=True,
         num_classes=num_classes,
         dec_pred_class_embed_share = False,
@@ -93,7 +93,7 @@ criterion = L(Criterion)(
         cost_oks=4.0,
 		focal_alpha=0.25
 		),
-    num_body_points=17
+    num_body_points=13
 	)
 
-postprocessor = L(PostProcess)(num_select=60, num_body_points=17)
+postprocessor = L(PostProcess)(num_select=60, num_body_points=13)
