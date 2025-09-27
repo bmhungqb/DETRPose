@@ -470,7 +470,7 @@ class Transformer(nn.Module):
         else:
             self.tgt_embed = None
 
-        self.label_enc = nn.Embedding(80 + 1, hidden_dim)
+        self.label_enc = nn.Embedding(1 + 1, hidden_dim)
         self.pose_enc = nn.Embedding(num_body_points, hidden_dim)
             
         self._reset_parameters()
@@ -670,7 +670,7 @@ class Transformer(nn.Module):
                 training=self.training,
                 num_queries=self.num_queries,
                 hidden_dim=self.hidden_dim,
-                num_classes=80,
+                num_classes=1,
                 label_enc=self.label_enc,
                 pose_enc=self.pose_enc,
                 num_keypoints=self.num_body_points,
