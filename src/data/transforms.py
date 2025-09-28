@@ -442,3 +442,86 @@ class ColorJitter(object):
                     img = F.adjust_hue(img, hue_factor)
 
         return img, target
+    
+class Rotate(object):
+    def __init__(self, degrees, p=0.5):
+        if isinstance(degrees, numbers.Number):
+            if degrees < 0:
+                raise ValueError("If degrees is a single number, it must be non-negative")
+            self.degrees = [-degrees, degrees]
+        elif isinstance(degrees, (tuple, list)) and len(degrees) == 2:
+            if not (-360 <= degrees[0] <= degrees[1] <= 360):
+                raise ValueError("Degrees should be between -360 and 360.")
+            self.degrees = degrees
+        else:
+            raise TypeError("Degrees should be a single number or a list/tuple with length 2.")
+        self.p = p
+    
+    def __call__(self, image, target=None):
+        if random.random() < self.p:
+            angle = float(torch.empty(1).uniform_(self.degrees[0], self.degrees[1]).item())
+            w, h = image.size
+
+            # rotate imge
+            rotated_image = F.rotate(image, angle, interpolation=F.InterpolationMode.BILINEAR, expand=True)
+
+            # Update target
+            target = target.copy()
+            cos_a = np.cos(np.radians(angle))
+            sin_a = np.sin(np.radians(angle))
+            cx, cy = w / 2, h / 2
+
+            if "boxes" in target:
+                boxes = target["boxes"]  # xyxy format
+                # convert to corners
+                corners = boxes.reshape(-1, 2, 2)
+                corners = corners - torch.tensor([cx, cy])
+                # rotate corners
+                x = corners[:, :, 0]
+                y = corners[:, :, 1]
+                x_new = x * cos_a - y * sin_a
+                y_new = x * sin_a + y * cos_a
+                rotated_corners = torch.stack([x_new, y_new], dim=-1)
+                # Translate back
+                new_w, new_h = rotated_image.size
+                rotated_corners = rotated_corners + torch.tensor([new_w / 2, new_h / 2])
+                # Get new bounding boxes
+                x_min = rotated_corners[:, :, 0].min(dim=1).values
+                x_max = rotated_corners[:, :, 0].max(dim=1).values
+                y_min = rotated_corners[:, :, 1].min(dim=1).values
+                y_max = rotated_corners[:, :, 1].max(dim=1).values
+                rotated_boxes = torch.stack([x_min, y_min, x_max, y_max], dim=-1)
+                # Clip to image boundaries
+                rotated_boxes = torch.clamp(rotated_boxes, min=0, max=torch.tensor([new_w, new_h, new_w, new_h]))
+                target["boxes"] = rotated_boxes
+                # Update area
+                area = (rotated_boxes[:, 2] - rotated_boxes[:, 0]) * (rotated_boxes[:, 3] - rotated_boxes[:, 1])
+                target["area"] = area
+            if "keypoints" in target:
+                keypoints = target["keypoints"]  # (N, K, 3) with x, y, visibility
+                kp_xy = keypoints[:, :, :2] - torch.tensor([cx, cy])  # Translate to origin
+                x = kp_xy[:, :, 0]
+                y = kp_xy[:, :, 1]
+                x_new = x * cos_a - y * sin_a
+                y_new = x * sin_a + y * cos_a
+                rotated_kp = torch.stack([x_new, y_new], dim=-1) + torch.tensor([new_w / 2, new_h / 2])
+                # Clip keypoints to image boundaries
+                rotated_kp = torch.clamp(rotated_kp, min=0, max=torch.tensor([new_w, new_h]))
+                visibility = keypoints[:, :, 2:]
+                rotated_kp = torch.where(visibility != 0, torch.cat([rotated_kp, visibility], dim=-1), 0)
+                target["keypoints"] = rotated_kp
+                # Remove instances with no visible keypoints
+                keep = rotated_kp[:, :, 2].sum(dim=1) != 0
+                for field in ["labels", "area", "iscrowd", "boxes", "masks", "keypoints"]:
+                    if field in target:
+                        target[field] = target[field][keep]
+            if "masks" in target:
+                target["masks"] = F.rotate(
+                    target["masks"].float(), angle, interpolation=F.InterpolationMode.NEAREST, expand=True
+                ) > 0.5
+
+            target["size"] = torch.tensor([new_h, new_w])
+            
+            return rotated_image, target   
+        
+        return image, target
