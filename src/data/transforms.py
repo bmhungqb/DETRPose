@@ -11,6 +11,7 @@ import torchvision.transforms as T
 import torchvision.transforms.functional as F
 import torchvision.transforms.v2.functional as F2
 
+import math
 from PIL import Image
 from ..misc.mask_ops import interpolate
 from ..misc.box_ops import box_xyxy_to_cxcywh
@@ -456,72 +457,146 @@ class Rotate(object):
         else:
             raise TypeError("Degrees should be a single number or a list/tuple with length 2.")
         self.p = p
-    
+
     def __call__(self, image, target=None):
-        if random.random() < self.p:
-            angle = float(torch.empty(1).uniform_(self.degrees[0], self.degrees[1]).item())
-            w, h = image.size
+        if random.random() >= self.p:
+            return image, target
 
-            # rotate imge
-            rotated_image = F.rotate(image, angle, interpolation=F.InterpolationMode.BILINEAR, expand=True)
+        angle = float(torch.empty(1).uniform_(self.degrees[0], self.degrees[1]).item())
+        w, h = image.size  # original width, height (PIL coordinates: x right, y down)
 
-            # Update target
-            target = target.copy()
-            cos_a = np.cos(np.radians(angle))
-            sin_a = np.sin(np.radians(angle))
-            cx, cy = w / 2, h / 2
+        # rotate image (PIL/torchvision rotates counter-clockwise by `angle`)
+        rotated_image = F.rotate(image, angle, interpolation=F.InterpolationMode.BILINEAR, expand=True)
+        new_w, new_h = rotated_image.size
 
-            if "boxes" in target:
-                boxes = target["boxes"]  # xyxy format
-                # convert to corners
-                corners = boxes.reshape(-1, 2, 2)
-                corners = corners - torch.tensor([cx, cy])
-                # rotate corners
-                x = corners[:, :, 0]
-                y = corners[:, :, 1]
-                x_new = x * cos_a - y * sin_a
-                y_new = x * sin_a + y * cos_a
-                rotated_corners = torch.stack([x_new, y_new], dim=-1)
-                # Translate back
-                new_w, new_h = rotated_image.size
-                rotated_corners = rotated_corners + torch.tensor([new_w / 2, new_h / 2])
-                # Get new bounding boxes
-                x_min = rotated_corners[:, :, 0].min(dim=1).values
-                x_max = rotated_corners[:, :, 0].max(dim=1).values
-                y_min = rotated_corners[:, :, 1].min(dim=1).values
-                y_max = rotated_corners[:, :, 1].max(dim=1).values
-                rotated_boxes = torch.stack([x_min, y_min, x_max, y_max], dim=-1)
-                # Clip to image boundaries
-                rotated_boxes = torch.clamp(rotated_boxes, min=0, max=torch.tensor([new_w, new_h, new_w, new_h]))
-                target["boxes"] = rotated_boxes
-                # Update area
-                area = (rotated_boxes[:, 2] - rotated_boxes[:, 0]) * (rotated_boxes[:, 3] - rotated_boxes[:, 1])
-                target["area"] = area
-            if "keypoints" in target:
-                keypoints = target["keypoints"]  # (N, K, 3) with x, y, visibility
-                kp_xy = keypoints[:, :, :2] - torch.tensor([cx, cy])  # Translate to origin
-                x = kp_xy[:, :, 0]
-                y = kp_xy[:, :, 1]
-                x_new = x * cos_a - y * sin_a
-                y_new = x * sin_a + y * cos_a
-                rotated_kp = torch.stack([x_new, y_new], dim=-1) + torch.tensor([new_w / 2, new_h / 2])
-                # Clip keypoints to image boundaries
-                rotated_kp = torch.clamp(rotated_kp, min=0, max=torch.tensor([new_w, new_h]))
-                visibility = keypoints[:, :, 2:]
-                rotated_kp = torch.where(visibility != 0, torch.cat([rotated_kp, visibility], dim=-1), 0)
-                target["keypoints"] = rotated_kp
-                # Remove instances with no visible keypoints
-                keep = rotated_kp[:, :, 2].sum(dim=1) != 0
+        if target is None:
+            return rotated_image, None
+
+        target = target.copy()
+
+        # Use float32 for geometric ops
+        device = None
+        # --- Prepare rotation coefficients for IMAGE coordinate system (y down) ---
+        # For image coords, rotation by angle (counter-clockwise on image) transforms:
+        # x' = x * cos(angle) + y * sin(angle)
+        # y' = -x * sin(angle) + y * cos(angle)
+        rad = math.radians(angle)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
+
+        # center points
+        cx, cy = w / 2.0, h / 2.0
+        center_orig = torch.tensor([cx, cy], dtype=torch.float32)
+
+        # --- BOXES (COCO format: x,y,w,h) ---
+        if "boxes" in target and target["boxes"] is not None and len(target["boxes"]) > 0:
+            boxes = target["boxes"].clone().to(torch.float32)
+            device = boxes.device
+            # ensure tensors on same device
+            boxes = boxes.to(device) if device is not None else boxes
+            center = torch.tensor([cx, cy], dtype=boxes.dtype, device=device)
+
+            x_min = boxes[:, 0]
+            y_min = boxes[:, 1]
+            x_max = x_min + boxes[:, 2]
+            y_max = y_min + boxes[:, 3]
+
+            # corners: (N, 4, 2)
+            corners = torch.stack([
+                torch.stack([x_min, y_min], dim=-1),
+                torch.stack([x_max, y_min], dim=-1),
+                torch.stack([x_max, y_max], dim=-1),
+                torch.stack([x_min, y_max], dim=-1),
+            ], dim=1).to(device=device)
+
+            # translate to origin (center)
+            corners = corners - center.to(device)
+
+            x = corners[..., 0]
+            y = corners[..., 1]
+
+            # rotate in IMAGE coordinates (note +sin in x, -sin in y)
+            x_new = x * cos_a + y * sin_a
+            y_new = -x * sin_a + y * cos_a
+            rotated_corners = torch.stack([x_new, y_new], dim=-1)
+
+            # translate back to new image center
+            new_center = torch.tensor([new_w / 2.0, new_h / 2.0], dtype=rotated_corners.dtype, device=device)
+            rotated_corners = rotated_corners + new_center
+
+            # mins & maxs
+            x_min_new = rotated_corners[..., 0].min(dim=1).values
+            y_min_new = rotated_corners[..., 1].min(dim=1).values
+            x_max_new = rotated_corners[..., 0].max(dim=1).values
+            y_max_new = rotated_corners[..., 1].max(dim=1).values
+
+            new_boxes = torch.stack([
+                x_min_new,
+                y_min_new,
+                x_max_new - x_min_new,
+                y_max_new - y_min_new
+            ], dim=1)
+
+            # clip per-dimension (use scalar max -> safe)
+            new_boxes[:, 0] = torch.clamp(new_boxes[:, 0], min=0.0, max=float(new_w))
+            new_boxes[:, 1] = torch.clamp(new_boxes[:, 1], min=0.0, max=float(new_h))
+            # recompute x_max/y_max after x_min/y_min clamping then clamp them to bounds
+            x_max_clamped = torch.clamp(new_boxes[:, 0] + new_boxes[:, 2], min=0.0, max=float(new_w))
+            y_max_clamped = torch.clamp(new_boxes[:, 1] + new_boxes[:, 3], min=0.0, max=float(new_h))
+            new_boxes[:, 2] = x_max_clamped - new_boxes[:, 0]
+            new_boxes[:, 3] = y_max_clamped - new_boxes[:, 1]
+
+            target["boxes"] = new_boxes
+            target["area"] = new_boxes[:, 2] * new_boxes[:, 3]
+
+        # --- KEYPOINTS (N, K, 3) with x,y,visibility ---
+        if "keypoints" in target and target["keypoints"] is not None and len(target["keypoints"]) > 0:
+            kps = target["keypoints"].clone().to(torch.float32)
+            device = kps.device if device is None else device
+            kps = kps.to(device) if device is not None else kps
+
+            kp_xy = kps[:, :, :2] - torch.tensor([cx, cy], dtype=torch.float32, device=device)
+            x = kp_xy[:, :, 0]
+            y = kp_xy[:, :, 1]
+
+            # rotate (image coords)
+            x_new = x * cos_a + y * sin_a
+            y_new = -x * sin_a + y * cos_a
+            rotated_kp_xy = torch.stack([x_new, y_new], dim=-1) + torch.tensor([new_w / 2.0, new_h / 2.0], dtype=torch.float32, device=device)
+
+            # clamp coordinates separately
+            rotated_kp_xy[..., 0] = torch.clamp(rotated_kp_xy[..., 0], min=0.0, max=float(new_w))
+            rotated_kp_xy[..., 1] = torch.clamp(rotated_kp_xy[..., 1], min=0.0, max=float(new_h))
+
+            visibility = kps[:, :, 2:3]
+            # keep visibility values, if visibility==0 set point to 0
+            rotated_kp = torch.cat([rotated_kp_xy, visibility], dim=-1)
+            rotated_kp = torch.where(visibility != 0, rotated_kp, torch.tensor(0.0, dtype=rotated_kp.dtype, device=device))
+
+            target["keypoints"] = rotated_kp
+
+            # remove instances with no visible keypoints
+            keep = (rotated_kp[:, :, 2] != 0).sum(dim=1) != 0
+            if keep.numel() > 0:
                 for field in ["labels", "area", "iscrowd", "boxes", "masks", "keypoints"]:
-                    if field in target:
-                        target[field] = target[field][keep]
-            if "masks" in target:
+                    if field in target and target[field] is not None:
+                        try:
+                            target[field] = target[field][keep]
+                        except Exception:
+                            # if indexing fails (e.g., masks in other format), skip
+                            pass
+
+        # --- MASKS ---
+        if "masks" in target and target["masks"] is not None:
+            # rotate mask same as image; keep boolean mask
+            try:
                 target["masks"] = F.rotate(
                     target["masks"].float(), angle, interpolation=F.InterpolationMode.NEAREST, expand=True
                 ) > 0.5
+            except Exception:
+                # in case masks type isn't a PIL-like tensor, skip or handle externally
+                pass
 
-            target["size"] = torch.tensor([new_h, new_w])
-            
-            return rotated_image, target   
-        
-        return image, target
+        target["size"] = torch.tensor([new_h, new_w], dtype=torch.int32)
+
+        return rotated_image, target

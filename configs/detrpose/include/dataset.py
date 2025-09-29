@@ -37,7 +37,7 @@ dataset_train = L(DataLoader)(
 			transforms5=L(T.RandomResize)(sizes=scales, max_size=max_size), 
 			transforms6=L(T.ToTensor)(),
 			transforms7=L(T.Normalize)(mean=[0, 0, 0], std=[1, 1, 1]),
-      transforms8=L(T.Rotate)(degrees=30, p=0.5) # add rotate
+      transforms8=L(T.Rotate)(degrees=45, p=0.5) # add rotate
 			),
 
 		),
